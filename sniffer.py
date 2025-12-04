@@ -3,7 +3,7 @@ from fingerprint_core import Fingerprinter
 from rules import build_default_fingerprinter
 
 INTERFACE = "eth0"          # change for comp
-SERVER_IP = "10.0.0.5"      # your box
+SERVER_IP = "10.0.0.5"      # comp box
 SUMMARY_INTERVAL = 30       # seconds between summaries
 
 fingerprinter = build_default_fingerprinter(SERVER_IP)
