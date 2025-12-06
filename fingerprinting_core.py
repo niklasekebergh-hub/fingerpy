@@ -2,8 +2,9 @@ from dataclasses import dataclass, field
 from typing import Dict, Tuple, Optional
 import time
 
-FlowKey = Tuple[str, str, int, int, str]  # src_ip, dst_ip, src_port, dst_port, proto
+from db import record_flow, add_alert
 
+FlowKey = Tuple[str, str, int, int, str]  # src_ip, dst_ip, src_port, dst_port, proto
 
 @dataclass
 class FlowStats:
@@ -14,116 +15,164 @@ class FlowStats:
     first_payload_bytes: bytes = b""
     last_seen: float = 0.0
 
-    def update(self, payload: bytes, direction: str, now: float) -> None:
-        self.packets += 1
-        self.bytes += len(payload)
-        if direction == "c2s":
-            self.client_to_server += len(payload)
-        elif direction == "s2c":
-            self.server_to_client += len(payload)
-        if not self.first_payload_bytes and payload:
-            # store a small prefix
-            self.first_payload_bytes = payload[:64]
-        self.last_seen = now
-
-
 @dataclass
 class FingerprintRule:
     name: str
     dst_port: Optional[int] = None
-    src_port: Optional[int] = None
-    contains_bytes: Optional[bytes] = None  # e.g. b"HTTP/1.1" or b"score"
+    proto: Optional[str] = None  # "tcp" or "udp"
     min_bytes: Optional[int] = None
     max_bytes: Optional[int] = None
-    scoring: bool = False  # True = scoring service, False = noise pattern
+    scoring: bool = False  # True => scoring service, False => noise / attacker
 
     def matches(self, key: FlowKey, stats: FlowStats) -> bool:
-        src_ip, dst_ip, sport, dport, proto = key
+        _, dst_ip, _sport, dport, proto = key
+        proto = proto.lower()
 
+        if self.proto and proto != self.proto.lower():
+            return False
         if self.dst_port is not None and dport != self.dst_port:
             return False
-        if self.src_port is not None and sport != self.src_port:
+
+        length = len(stats.first_payload_bytes) if stats.first_payload_bytes else stats.bytes
+        if self.min_bytes is not None and length < self.min_bytes:
             return False
-        if self.min_bytes is not None and stats.bytes < self.min_bytes:
+        if self.max_bytes is not None and length > self.max_bytes:
             return False
-        if self.max_bytes is not None and stats.bytes > self.max_bytes:
-            return False
-        if self.contains_bytes is not None:
-            if self.contains_bytes not in stats.first_payload_bytes:
-                return False
+
         return True
 
 
+@dataclass
 class Fingerprinter:
-    def __init__(self, server_ip: Optional[str] = None):
-        # server_ip: your box in the competition environment
-        self.server_ip = server_ip
-        self.flows: Dict[FlowKey, FlowStats] = {}
-        self.rules: Dict[str, FingerprintRule] = {}
+    server_ip: Optional[str] = None
+    flows: Dict[FlowKey, FlowStats] = field(default_factory=dict)
+    rules: Dict[str, FingerprintRule] = field(default_factory=dict)
 
     def add_rule(self, rule: FingerprintRule) -> None:
         self.rules[rule.name] = rule
 
     def flow_direction(self, key: FlowKey, src_ip: str) -> str:
-        # crude assumption: "client" == not our server_ip
-        if self.server_ip is None:
-            return "c2s"
-        return "c2s" if src_ip != self.server_ip else "s2c"
+        if self.server_ip:
+            return "c2s" if src_ip != self.server_ip else "s2c"
+        # Assume src is client.
+        return "c2s"
 
     def update_flow(self, key: FlowKey, src_ip: str, payload: bytes) -> None:
         now = time.time()
-        if key not in self.flows:
-            self.flows[key] = FlowStats()
+        stats = self.flows.get(key)
+        if not stats:
+            stats = FlowStats()
+            self.flows[key] = stats
+
+        stats.packets += 1
+        pkt_len = len(payload)
+        stats.bytes += pkt_len
+        stats.last_seen = now
+
+        if not stats.first_payload_bytes and payload:
+            stats.first_payload_bytes = payload[:64]
+
         direction = self.flow_direction(key, src_ip)
-        self.flows[key].update(payload, direction, now)
+        if direction == "c2s":
+            stats.client_to_server += 1
+        else:
+            stats.server_to_client += 1
 
-    def classify_flow(self, key: FlowKey, stats: FlowStats) -> str:
-        # Return "scoring", "noise", or "unknown"
-        best_match = None
+        label, rule = self.classify_flow(key, stats)
+        rule_name = rule.name if rule else None
+        classification = label or "unknown"
+
+        src_ip, dst_ip, _sport, dport, proto = key
+        record_flow(
+            src_ip=src_ip,
+            dst_ip=dst_ip,
+            dst_port=dport,
+            proto=proto,
+            classification=classification,
+            rule_name=rule_name,
+            bytes_count=pkt_len,
+            server_ip=self.server_ip,
+        )
+
+        if label == "noise":
+            add_alert(
+                ip=src_ip,
+                alert_type="noise_flow",
+                reason=f"Rule={rule_name} dst={dst_ip}:{dport}/{proto} bytes={pkt_len}",
+            )
+
+    def classify_flow(
+        self, key: FlowKey, stats: FlowStats) -> Tuple[Optional[str], Optional[FingerprintRule]]:
+        matching_scoring: Optional[FingerprintRule] = None
+        matching_noise: Optional[FingerprintRule] = None
+
         for rule in self.rules.values():
-            if rule.matches(key, stats):
-                best_match = rule
-                break  # simple: first match wins
+            if not rule.matches(key, stats):
+                continue
+            if rule.scoring:
+                matching_scoring = rule
+            else:
+                matching_noise = rule
 
-        if best_match is None:
-            return "unknown"
-        return "scoring" if best_match.scoring else "noise"
+        if matching_scoring:
+            return "scoring", matching_scoring
+        if matching_noise:
+            return "noise", matching_noise
+        return None, None
 
     def summarize(self) -> None:
-        print("=" * 80)
-        for key, stats in list(self.flows.items()):
-            label = self.classify_flow(key, stats)
-            src_ip, dst_ip, sport, dport, proto = key
-            print(f"[{label.upper():7}] {src_ip}:{sport} -> {dst_ip}:{dport}/{proto} "
-                  f"pkts={stats.packets} bytes={stats.bytes}")
-        print("=" * 80)
+        print("\n=== Flow summary ===")
+        now = time.time()
+        by_dst: Dict[Tuple[str, int, str], FlowStats] = {}
+
+        for (src_ip, dst_ip, _sport, dport, proto), stats in self.flows.items():
+            key = (dst_ip, dport, proto)
+            agg = by_dst.get(key)
+            if not agg:
+                agg = FlowStats()
+                by_dst[key] = agg
+            agg.packets += stats.packets
+            agg.bytes += stats.bytes
+            agg.last_seen = max(agg.last_seen, stats.last_seen)
+
+        for (dst_ip, dport, proto), stats in sorted(
+            by_dst.items(), key=lambda x: (x[0][0], x[0][1], x[0][2])
+        ):
+            age = now - stats.last_seen
+            # Label this aggregated flow according to our rules.
+            fake_key: FlowKey = ("0.0.0.0", dst_ip, 0, dport, proto)
+            label, rule = self.classify_flow(fake_key, stats)
+            label = label or "unknown"
+            rule_name = rule.name if rule else "-"
+
+            print(
+                f"{dst_ip:>15}:{dport:<5}/{proto:<3}  "
+                f"bytes={stats.bytes:<8} pkts={stats.packets:<6} "
+                f"age={age:5.1f}s  class={label:<7} rule={rule_name}"
+            )
 
     def suggest_drop_rules(self, server_ip: Optional[str] = None) -> None:
-        """
-        Print suggested iptables drop rules for noise flows.
-        You add/modify these manually – do NOT blindly paste in prod.
-        """
         server_ip = server_ip or self.server_ip
-        printed = set()
+        printed: set = set()
 
-        for key, stats in self.flows.items():
-            label = self.classify_flow(key, stats)
+        for (src_ip, dst_ip, _sport, dport, proto), stats in self.flows.items():
+            key = (src_ip, dst_ip, _sport, dport, proto)
+            label, rule = self.classify_flow(key, stats)
             if label != "noise":
                 continue
-            src_ip, dst_ip, sport, dport, proto = key
 
-            # Only suggest rules that drop traffic TO your server.
+            # If server_ip is known, we only care about noise *towards* us.
             if server_ip is not None and dst_ip != server_ip:
                 continue
 
-            rule = (dst_ip, dport, proto)
-            if rule in printed:
+            dedup_key = (dst_ip, dport, proto.lower())
+            if dedup_key in printed:
                 continue
-            printed.add(rule)
+            printed.add(dedup_key)
 
             if proto.lower() == "tcp":
-                print(f"# Noise flow: {dst_ip}:{dport}/tcp")
+                print(f"# Noise flow: {dst_ip}:{dport}/tcp  (rule={rule.name if rule else '?'} src={src_ip})")
                 print(f"iptables -A INPUT -p tcp --dport {dport} -j DROP")
             elif proto.lower() == "udp":
-                print(f"# Noise flow: {dst_ip}:{dport}/udp")
+                print(f"# Noise flow: {dst_ip}:{dport}/udp  (rule={rule.name if rule else '?'} src={src_ip})")
                 print(f"iptables -A INPUT -p udp --dport {dport} -j DROP")
