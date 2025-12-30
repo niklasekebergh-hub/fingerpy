@@ -57,42 +57,10 @@ def start_sniffing(
         now = time.time()
         if now - last_summary >= summary_interval:
             fingerprinter.summarize()
-            print("# Suggested drop rules (manual review required):")
-            fingerprinter.suggest_drop_rules()
             last_summary = now
 
     print(f"[+] Sniffing on {interface}, server_ip={server_ip or 'UNKNOWN'}")
     try:
         sniff(iface=interface, prn=_prn, store=False)
     except KeyboardInterrupt:
-        print("\n[!] KeyboardInterrupt – final summary:")
-        fingerprinter.summarize()
-        print("# Final suggested drop rules:")
-        fingerprinter.suggest_drop_rules()
-
-
-def main() -> None:
-    #Minimal CLI entry point
-
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Simple competition fingerprinter/sniffer")
-    parser.add_argument("-i", "--interface", required=True, help="Interface to sniff on, e.g. eth0")
-    parser.add_argument(
-        "-s",
-        "--server-ip",
-        help="IP of THIS box (used to orient flows and drop rules)",
-    )
-    parser.add_argument(
-        "--summary-interval",
-        type=int,
-        default=30,
-        help="Seconds between automatic summaries (default: 30)",
-    )
-
-    args = parser.parse_args()
-    start_sniffing(args.interface, server_ip=args.server_ip, summary_interval=args.summary_interval)
-
-
-if __name__ == "__main__":
-    main()
+        print("\n[!] KeyboardInterrupt – Results stored to database. (netmon.db)")
