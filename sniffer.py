@@ -1,13 +1,10 @@
 from typing import Optional
+from db import DP_PATH
+from scapy.all import sniff, IP, TCP, UDP, Raw,   # type: ignore
 
-from scapy.all import sniff, IP, TCP, UDP, Raw  # type: ignore
+from fingerprinting_core import Aggregator, FlowKey, build_default_aggregator
 
-from fingerprinting_core import Fingerprinter, FlowKey
-from rules import build_default_fingerprinter
-
-
-def _handle_packet(pkt, fingerprinter: Fingerprinter) -> None:
-    # Only process IP packets with TCP/UDP
+def _handle_packet(pkt, fingerprinter: Aggregator, server_ip: str) -> None:
     if IP not in pkt:
         return
 
@@ -36,31 +33,30 @@ def _handle_packet(pkt, fingerprinter: Fingerprinter) -> None:
     payload = bytes(pkt[Raw].load) if Raw in pkt else b""
 
     key: FlowKey = (ip_layer.src, ip_layer.dst, sport, dport, proto)
-    fingerprinter.update_flow(key, src_ip=ip_layer.src, payload=payload)
+    fingerprinter.update_flow(key=key, payload=payload, pkt_len=len(payload), ts=pkt.time, server_ip=server_ip)
 
 
 def start_sniffing(
     interface: str,
-    server_ip: Optional[str] = None,
+    server_ip: str,
     summary_interval: int = 30,
 ) -> None:
     
     import time
 
-    fingerprinter = build_default_fingerprinter(server_ip)
+    agg = build_default_aggregator(server_ip)
 
     last_summary = time.time()
 
-    def _prn(pkt):
+    def _on_packet(pkt):
         nonlocal last_summary
-        _handle_packet(pkt, fingerprinter)
+        _handle_packet(pkt, agg, server_ip)
         now = time.time()
         if now - last_summary >= summary_interval:
-            fingerprinter.summarize()
             last_summary = now
 
-    print(f"[+] Sniffing on {interface}, server_ip={server_ip or 'UNKNOWN'}")
+    print(f"[+] Sniffing on {interface}, server_ip={server_ip or 'UNSPECIFIED'}")
     try:
-        sniff(iface=interface, prn=_prn, store=False)
+        sniff(iface=interface, prn=_on_packet, store=False)
     except KeyboardInterrupt:
-        print("\n[!] KeyboardInterrupt – Results stored to database. (netmon.db)")
+        print(f"\n[!] KeyboardInterrupt – Results stored to {DP_PATH}")

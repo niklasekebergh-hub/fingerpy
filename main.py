@@ -24,7 +24,8 @@ def main() -> None:
     parser.add_argument(
         "-s",
         "--server-ip",
-        help="IP address of THIS host (used to orient flows & firewall suggestions)",
+        required=True,
+        help="IP address of THIS host (used to orient flows)",
     )
     parser.add_argument(
         "--summary-interval",
