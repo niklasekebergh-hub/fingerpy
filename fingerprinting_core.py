@@ -32,7 +32,12 @@ class Aggregator:
             self.flows[key].packets_c2s += 1
         else:
             self.flows[key].packets_s2c += 1
-        
 
-def build_default_aggregator(server_ip: Optional[str] = None) -> Aggregator:
+
+def build_default_aggregator(server_ip: str) -> Aggregator:
     return Aggregator() 
+
+def print_top_flows(aggregator: Aggregator, top: int = 5) -> None:
+    sorted_flows = sorted(aggregator.flows.items(), key=lambda item: item[1].byte_count, reverse=True)
+    for i, (key, stats) in enumerate(sorted_flows[:top]):
+        print(f"Flow {i+1}: {key} - Packets: {stats.packets}, Bytes: {stats.byte_count},  First Seen: {stats.first_seen}, Last Seen: {stats.last_seen}")
