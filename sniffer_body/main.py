@@ -1,17 +1,3 @@
-"""
-Competition entry point for fingerpy.
-
-Usage (basic):
-
-    sudo python3 main.py -i eth0 -s 10.0.0.5
-
-This will:
-  - create / update netmon.db in the current directory
-  - sniff traffic on eth0
-  - periodically print summaries + suggested iptables DROP rules
-  - keep a competition-focused SQLite record of hosts/services/alerts
-"""
-
 from db import init_db
 from sniffer import start_sniffing
 

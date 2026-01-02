@@ -2,7 +2,7 @@ from typing import Optional
 from db import DP_PATH
 from scapy.all import sniff, IP, TCP, UDP, Raw,   # type: ignore
 
-from fingerprinting_core import Aggregator, FlowKey, build_default_aggregator, print_top_flows
+from fingerprinting_core import *
 
 def _handle_packet(pkt, fingerprinter: Aggregator, server_ip: str) -> None:
     if IP not in pkt:
@@ -56,9 +56,12 @@ def start_sniffing(
             print(f"\n[+] Summary at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}:")
             print_top_flows(agg)
             last_summary = now
+            update_db(agg)
+            
 
     print(f"[+] Sniffing on {interface}, server_ip={server_ip or 'UNSPECIFIED'}")
     try:
         sniff(iface=interface, prn=_on_packet, store=False)
     except KeyboardInterrupt:
+        update_db(agg)
         print(f"\n[!] KeyboardInterrupt – Results stored to {DP_PATH}")
