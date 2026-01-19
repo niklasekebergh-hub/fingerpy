@@ -13,4 +13,4 @@ Root/Administrator Privilege
 
 pip install Scapy
 _________________________________________________________________________________
-Currently is used to scope network traffic and understand the topology of the system. Plans to implement service health checks soon. May implement an IDS in the future, or some sort of deep-learning anomoly detection.
+Currently is used to scope network traffic and understand the topology of the system. Can be incorporated with a SIEM solution.
